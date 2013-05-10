@@ -126,7 +126,7 @@ module Moped
         err = error_message(result)
         UNAUTHORIZED.include?(result["code"]) ||
           UNAUTHORIZED.include?(result["assertionCode"]) ||
-          (err && err =~ /unauthorized/)
+          (err && (err =~ /unauthorized/ || err =~ /not authorized/))
       end
 
       class << self
@@ -156,7 +156,7 @@ module Moped
       def deserialize_documents(buffer)
         documents = []
         count.times do
-          documents << BSON::Document.deserialize(buffer)
+          documents << BSON::Document.from_bson(buffer)
         end
         @documents = documents
       end

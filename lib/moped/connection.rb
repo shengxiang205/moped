@@ -1,6 +1,8 @@
 # encoding: utf-8
 require "moped/connection/manager"
 require "moped/connection/pool"
+require "moped/connection/queue"
+require "moped/connection/reaper"
 require "moped/connection/sockets"
 
 module Moped
@@ -9,6 +11,11 @@ module Moped
   #
   # @since 2.0.0
   class Connection
+
+    # The default connection timeout, in seconds.
+    #
+    # @since 2.0.0
+    TIMEOUT = 5
 
     # @!attribute host
     #   @return [ String ] The ip address of the host.
@@ -163,7 +170,7 @@ module Moped
           sock_read = read_data(socket, reply.length - 36)
           buffer = StringIO.new(sock_read)
           reply.documents = reply.count.times.map do
-            BSON::Document.deserialize(buffer)
+            BSON::Document.from_bson(buffer)
           end
         end
         reply

@@ -10,6 +10,45 @@ describe Moped::Node, replica_set: true do
     Moped::Node.new(replica_set_node.address)
   end
 
+  describe "#auto_discovering?" do
+
+    context "when no option is provided" do
+
+      let(:node) do
+        described_class.new(replica_set_node.address, {})
+      end
+
+      it "returns true" do
+        expect(node).to be_auto_discovering
+      end
+    end
+
+    context "when an option is provided" do
+
+      context "when the option is true" do
+
+        let(:node) do
+          described_class.new(replica_set_node.address, auto_discover: true)
+        end
+
+        it "returns true" do
+          expect(node).to be_auto_discovering
+        end
+      end
+
+      context "when the option is false" do
+
+        let(:node) do
+          described_class.new(replica_set_node.address, auto_discover: false)
+        end
+
+        it "returns true" do
+          expect(node).to_not be_auto_discovering
+        end
+      end
+    end
+  end
+
   describe "#disconnect" do
 
     context "when the node is running" do
@@ -51,10 +90,6 @@ describe Moped::Node, replica_set: true do
 
   describe "#peers" do
 
-    let(:node) do
-      described_class.new("127.0.0.1:27017")
-    end
-
     let(:info) do
       {
          "setName"   => "moped_dev",
@@ -67,15 +102,35 @@ describe Moped::Node, replica_set: true do
       }
     end
 
-    context "when the hosts contain the primary" do
+    context "when the node is auto discovering" do
+
+      let(:node) do
+        described_class.new("127.0.0.1:27017")
+      end
 
       before do
         node.should_receive(:command).with("admin", ismaster: 1).and_return(info)
         node.refresh
       end
 
-      it "allows duplicates in the peers" do
-        node.peers.size.should eq(3)
+      it "auto discovers additional host nodes" do
+        expect(node.peers.size).to eq(2)
+      end
+    end
+
+    context "when the node is not auto discovering" do
+
+      let(:node) do
+        described_class.new("127.0.0.1:27017", auto_discover: false)
+      end
+
+      before do
+        node.should_receive(:command).with("admin", ismaster: 1).and_return(info)
+        node.refresh
+      end
+
+      it "does not auto discover additional host nodes" do
+        expect(node.peers.size).to eq(0)
       end
     end
   end
@@ -155,9 +210,14 @@ describe Moped::Node, replica_set: true do
 
     context "when the socket gets disconnected in the middle of a send" do
 
-      pending "reconnects the socket" do
-        node.connection.stub(:connected?).and_return(true)
-        node.connection.instance_variable_set(:@sock, nil)
+      before do
+        node.connection do |conn|
+          conn.stub(:connected?).and_return(true)
+          conn.instance_variable_set(:@sock, nil)
+        end
+      end
+
+      it "reconnects the socket" do
         lambda do
           node.ensure_connected do
             node.command("admin", ping: 1)
@@ -173,7 +233,10 @@ describe Moped::Node, replica_set: true do
       end
 
       before do
-        node.stub(:connect).and_raise(potential_reconfiguration_error)
+        node.connection do |conn|
+          conn.stub(:connected?).and_return(false)
+          conn.stub(:connect).and_raise(potential_reconfiguration_error)
+        end
       end
 
       context "and the reconfigation is of a replica set" do

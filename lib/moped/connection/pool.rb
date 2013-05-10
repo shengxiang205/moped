@@ -8,7 +8,7 @@ module Moped
     class Pool
 
       # The default max size for the connection pool.
-      MAX_SIZE = 5
+      POOL_SIZE = 5
 
       # The default timeout for getting connections from the queue.
       TIMEOUT = 0.25
@@ -19,7 +19,9 @@ module Moped
       #   @return [ Integer ] The port on the host.
       # @!attribute options
       #   @return [ Hash ] The connection pool options.
-      attr_reader :host, :port, :options
+      # @!attribute reaper
+      #   @return [ Reaper ] The connection pool reaper.
+      attr_reader :host, :port, :options, :reaper
 
       # Checkout a connection from the connection pool. If there exists a
       # connection pinned to the current thread, then we return that first. If
@@ -34,18 +36,16 @@ module Moped
       # @since 2.0.0
       def checkout
         mutex.synchronize do
-          conn = pinned[thread_id]
-          if conn
-            unless conn.expired?
-              raise Errors::ConnectionInUse, "The connection on #{thread_id} is in use."
+          connection = pinned[thread_id]
+          if connection
+            unless connection.expired?
+              raise Errors::ConnectionInUse, "The connection on thread: #{thread_id} is in use."
             else
-              conn.lease
-              conn
+              lease(connection)
             end
           else
-            conn = pinned[thread_id] = (unpinned.pop || create_connection)
-            conn.lease
-            conn
+            connection = pinned[thread_id] = next_connection
+            lease(connection)
           end
         end
       end
@@ -61,8 +61,7 @@ module Moped
       # @since 2.0.0
       def checkin(connection)
         mutex.synchronize do
-          connection.expire
-          pinned[thread_id] = connection
+          expire(connection)
         end
       end
 
@@ -78,10 +77,14 @@ module Moped
         @host = host
         @port = port
         @options = options
+        @reaper = Reaper.new(options[:reap_interval] || Reaper::INTERVAL, self)
         @mutex = Mutex.new
         @resource = ConditionVariable.new
         @pinned = {}
-        @unpinned = []
+        @unpinned = Queue.new(max_size) do
+          Connection.new(host, port, options[:timeout] || Connection::TIMEOUT, options)
+        end
+        reaper.start
       end
 
       # Get the max size for the connection pool.
@@ -93,7 +96,26 @@ module Moped
       #
       # @since 2.0.0
       def max_size
-        @max_size ||= (options[:max_size] || MAX_SIZE)
+        @max_size ||= (options[:pool_size] || POOL_SIZE)
+      end
+
+      # Reap all connections that are active and associated with dead threads.
+      #
+      # @example Reap the connections.
+      #   pool.reap([ 12351122313 ])
+      #
+      # @param [ Array<Integer> ] ids The ids of the current active threads.
+      #
+      # @return [ Pool ] The connection pool.
+      #
+      # @since 2.0.0
+      def reap(ids = active_threads)
+        pinned.each do |id, conn|
+          unless ids.include?(id)
+            conn.expire
+            unpinned.push(pinned.delete(id))
+          end
+        end and self
       end
 
       # Get the current size of the connection pool. Is the total of pinned
@@ -121,16 +143,55 @@ module Moped
         @timeout ||= (options[:pool_timeout] || TIMEOUT)
       end
 
+      # Execute the block with a connection, ensuring that the checkin/checkout
+      # workflow is properly executed.
+      #
+      # @example Execute the block with a connection.
+      #   pool.with_connection do |conn|
+      #     conn.connect
+      #   end
+      #
+      # @return [ Object ] The result of the yield.
+      #
+      # @since 2.0.0
+      def with_connection
+        connection = checkout
+        begin
+          yield(connection)
+        ensure
+          checkin(connection)
+        end
+      end
+
       private
 
       attr_reader :mutex, :resource, :pinned, :unpinned
 
-      def create_connection
-        Connection.new(host, port, options[:timeout] || 5, options)
+      def expire(connection)
+        connection.expire
+        pinned[thread_id] = connection
+      end
+
+      def lease(connection)
+        connection.lease
+        connection
+      end
+
+      def next_connection
+        reap if saturated?
+        unpinned.pop(timeout)
+      end
+
+      def saturated?
+        size == max_size
       end
 
       def thread_id
         Thread.current.object_id
+      end
+
+      def active_threads
+        Thread.list.select{ |thread| thread.alive? }.map{ |thread| thread.object_id }
       end
     end
   end

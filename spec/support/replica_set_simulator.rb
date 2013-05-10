@@ -107,7 +107,7 @@ module Support
         @primary = false
         @secondary = false
 
-        @host = Socket.gethostname
+        @host = "127.0.0.1"
         @port = port
         @hiccup_on_next_message = nil
       end
@@ -293,7 +293,7 @@ module Support
         data.gets("\x00") # collection name
         data.read(8) # skip/limit
 
-        selector = Moped::BSON::Document.deserialize(data)
+        selector = BSON::Document.from_bson(data)
         selector == { "ismaster" => 1 }
       end
 
@@ -303,7 +303,7 @@ module Support
         data.gets("\x00") # collection name
         data.read(8) # skip/limit
 
-        selector = Moped::BSON::Document.deserialize(data)
+        selector = BSON::Document.from_bson(data)
         selector["authenticate"] == 1
       end
     end

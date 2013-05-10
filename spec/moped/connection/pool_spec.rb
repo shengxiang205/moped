@@ -4,46 +4,10 @@ describe Moped::Connection::Pool do
 
   describe "#checkin" do
 
-    context "when no connections exist in the pool" do
-
-      let(:pool) do
-        described_class.new("127.0.0.1", 27017, max_size: 2)
-      end
-
-      let(:connection) do
-        Moped::Connection.new("127.0.0.1", 27017, 5)
-      end
-
-      before do
-        connection.lease
-        pool.checkin(connection)
-      end
-
-      let(:pinned) do
-        pool.send(:pinned)
-      end
-
-      it "adds the connection to the pool" do
-        expect(pinned[Thread.current.object_id]).to equal(connection)
-      end
-
-      it "expires the connection" do
-        expect(connection).to be_expired
-      end
-
-      it "updates the pool size" do
-        expect(pool.size).to eq(1)
-      end
-    end
-
     context "when connections exist in the pool" do
 
       let(:pool) do
-        described_class.new("127.0.0.1", 27017, max_size: 2)
-      end
-
-      let(:connection) do
-        Moped::Connection.new("127.0.0.1", 27017, 5)
+        described_class.new("127.0.0.1", 27017, pool_size: 2)
       end
 
       let(:pinned) do
@@ -56,8 +20,11 @@ describe Moped::Connection::Pool do
 
       context "when a pinned connection exists for the thread" do
 
+        let(:connection) do
+          pool.checkout
+        end
+
         before do
-          pool.checkin(connection)
           pool.checkin(connection)
         end
 
@@ -66,7 +33,7 @@ describe Moped::Connection::Pool do
         end
 
         it "does not modify the unpinned connections" do
-          expect(unpinned).to be_empty
+          expect(unpinned.size).to eq(1)
         end
 
         it "expires the connection" do
@@ -74,7 +41,7 @@ describe Moped::Connection::Pool do
         end
 
         it "keeps the pool size" do
-          expect(pool.size).to eq(1)
+          expect(pool.size).to eq(2)
         end
       end
     end
@@ -82,15 +49,7 @@ describe Moped::Connection::Pool do
 
   describe "#checkout" do
 
-    context "when no connections exist in the pool" do
-
-      let(:pool) do
-        described_class.new("127.0.0.1", 27017, max_size: 2)
-      end
-
-      let!(:connection) do
-        pool.checkout
-      end
+    shared_examples_for "a pool with an available connection on the current thread" do
 
       let(:pinned) do
         pool.send(:pinned)
@@ -107,16 +66,29 @@ describe Moped::Connection::Pool do
       it "pins the connection to the current thread" do
         expect(pinned[Thread.current.object_id]).to be_a(Moped::Connection)
       end
+    end
+
+    context "when no connections exist in the pool" do
+
+      let(:pool) do
+        described_class.new("127.0.0.1", 27017, pool_size: 2)
+      end
+
+      let!(:connection) do
+        pool.checkout
+      end
+
+      it_behaves_like "a pool with an available connection on the current thread"
 
       it "updates the pool size" do
-        expect(pool.size).to eq(1)
+        expect(pool.size).to eq(2)
       end
     end
 
     context "when connections exist in the pool" do
 
       let(:pool) do
-        described_class.new("127.0.0.1", 27017, max_size: 2)
+        described_class.new("127.0.0.1", 27017, pool_size: 2)
       end
 
       context "when a connection exists for the thread id" do
@@ -150,28 +122,95 @@ describe Moped::Connection::Pool do
 
         context "when the pool is not saturated" do
 
-          pending "returns a new connection"
-          pending "pins the connection to the current thread"
-          pending "leases the connection"
-          pending "updates the pool size"
+          before do
+            Thread.new do
+              pool.checkout
+            end.join
+          end
+
+          let!(:connection) do
+            pool.checkout
+          end
+
+          it_behaves_like "a pool with an available connection on the current thread"
+
+          it "updates the pool size" do
+            expect(pool.size).to eq(2)
+          end
         end
 
         context "when the pool is saturated" do
 
           context "when reaping frees new connections" do
 
-            pending "returns a new connection"
-            pending "pins the connection to the current thread"
-            pending "leases the connection"
-            pending "updates the pool size"
+            let!(:thread_one) do
+              Thread.new do
+                pool.checkout
+              end
+            end
+
+            let!(:thread_two) do
+              Thread.new do
+                pool.checkout
+              end
+            end
+
+            before do
+              thread_one.join
+              thread_two.join
+              thread_one.kill
+            end
+
+            let!(:connection) do
+              pool.checkout
+            end
+
+            it_behaves_like "a pool with an available connection on the current thread"
+
+            it "does not change the pool size" do
+              expect(pool.size).to eq(2)
+            end
           end
 
           context "when reaping does not free any new connections" do
 
-            pending "raises an error"
+            let!(:thread_one) do
+              Thread.new do
+                pool.checkout
+              end
+            end
+
+            let!(:thread_two) do
+              Thread.new do
+                pool.checkout
+                sleep(3)
+                pool.checkout
+              end
+            end
+
+            before do
+              thread_one.join
+            end
+
+            it "raises an error" do
+              expect {
+                thread_two.join
+              }.to raise_error(Moped::Errors::ConnectionInUse)
+            end
           end
         end
       end
+    end
+  end
+
+  describe "#initialize" do
+
+    let(:pool) do
+      described_class.new("127.0.0.1", 27017, pool_size: 2)
+    end
+
+    it "instantiates all the connections" do
+      expect(pool.size).to eq(2)
     end
   end
 
@@ -180,7 +219,7 @@ describe Moped::Connection::Pool do
     context "when the max_size option is provided" do
 
       let(:pool) do
-        described_class.new("127.0.0.1", 27017, max_size: 2)
+        described_class.new("127.0.0.1", 27017, pool_size: 2)
       end
 
       it "returns the max size" do

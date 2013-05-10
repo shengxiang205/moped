@@ -252,7 +252,7 @@ module Moped
       while node = available_nodes.shift
         begin
           return yield(node.apply_credentials(credentials))
-        rescue Errors::ConnectionFailure
+        rescue Errors::ConnectionFailure => e
           next
         end
       end
